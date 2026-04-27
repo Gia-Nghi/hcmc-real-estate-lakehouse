@@ -1,0 +1,410 @@
+name: hcmre-lakehouse
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: hcmre-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2185:2181"
+    networks:
+      - lakehouse-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: hcmre-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9095:9092"
+      - "29095:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9095
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    networks:
+      - lakehouse-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: hcmre-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9050:9000"
+      - "9051:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - lakehouse-net
+
+  spark:
+    image: spark:3.5.8-python3
+    container_name: hcmre-spark
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+    ports:
+      - "8051:8080"
+      - "7075:7077"
+    volumes:
+      - ./workspace:/opt/workspace
+    networks:
+      - lakehouse-net
+
+  postgres:
+    image: postgres:15
+    container_name: hcmre-airflow-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    networks:
+      - lakehouse-net
+
+  airflow-init:
+    image: apache/airflow:2.9.1
+    container_name: hcmre-airflow-init
+    depends_on:
+      - postgres
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__FERNET_KEY: ""
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    user: "50000:0"
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate && \
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    networks:
+      - lakehouse-net
+
+  airflow-webserver:
+    image: apache/airflow:2.9.1
+    container_name: hcmre-airflow-webserver
+    depends_on:
+      - postgres
+      - airflow-init
+    restart: unless-stopped
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__FERNET_KEY: ""
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: Asia/Ho_Chi_Minh
+    user: "50000:0"
+    command: webserver
+    ports:
+      - "8050:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    networks:
+      - lakehouse-net
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.1
+    container_name: hcmre-airflow-scheduler
+    depends_on:
+      - postgres
+      - airflow-init
+    restart: unless-stopped
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__FERNET_KEY: ""
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    user: "50000:0"
+    command: scheduler
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    networks:
+      - lakehouse-net
+
+  
+  crawler-chotot:
+    image: python:3.11-slim
+    container_name: hcmre-crawler-chotot
+    depends_on:
+      - kafka
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: chotot_raw
+      BATCH_SIZE: 20
+      LOOP_SLEEP_SECONDS: 900
+      MODE: once
+      LOG_LEVEL: INFO
+    volumes:
+      - ./workspace:/app
+    command: >
+      sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
+             python /app/ingestion/market_listings/chotot/run.py"
+    networks:
+      - lakehouse-net
+
+
+  consumer-chotot-bronze:
+    image: python:3.11-slim
+    container_name: hcmre-consumer-chotot-bronze
+    depends_on:
+      - kafka
+      - minio
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: chotot_raw
+      KAFKA_GROUP_ID: chotot-raw-to-bronze
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECURE: "false"
+      MINIO_BUCKET: lakehouse
+      FLUSH_EVERY: 20
+      LOG_LEVEL: INFO
+    volumes:
+      - ./workspace:/app
+    command: >
+      sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
+             python /app/ingestion/market_listings/consumers/chotot_raw_to_bronze.py"
+    networks:
+      - lakehouse-net
+
+  collector-google-trends:
+    image: python:3.11-slim
+    container_name: hcmre-collector-google-trends
+    depends_on:
+      - minio
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECURE: "false"
+      MINIO_BUCKET: lakehouse
+      GT_GEO: VN
+      GT_TIMEFRAME: today 12-m
+      LOG_LEVEL: INFO
+    volumes:
+      - ./workspace:/app
+    command: >
+      sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
+             python /app/ingestion/user_interest/google_trends/run.py"
+    networks:
+      - lakehouse-net
+
+  # collector-osm-pois:
+  #   image: python:3.11-slim
+  #   container_name: hcmre-collector-osm-pois
+  #   depends_on:
+  #     - minio
+  #   working_dir: /app
+  #   environment:
+  #     PYTHONPATH: /app
+  #     MINIO_ENDPOINT: minio:9000
+  #     MINIO_ACCESS_KEY: minioadmin
+  #     MINIO_SECRET_KEY: minioadmin
+  #     MINIO_SECURE: "false"
+  #     MINIO_BUCKET: lakehouse
+  #     LOG_LEVEL: INFO
+  #   volumes:
+  #     - ./workspace:/app
+  #   command: >
+  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
+  #            python /app/ingestion/geo_context/osm/runners/run_pois.py"
+  #   networks:
+  #     - lakehouse-net
+
+  # collector-osm-roads:
+  #   image: python:3.11-slim
+  #   container_name: hcmre-collector-osm-roads
+  #   depends_on:
+  #     - minio
+  #   working_dir: /app
+  #   environment:
+  #     PYTHONPATH: /app
+  #     MINIO_ENDPOINT: minio:9000
+  #     MINIO_ACCESS_KEY: minioadmin
+  #     MINIO_SECRET_KEY: minioadmin
+  #     MINIO_SECURE: "false"
+  #     MINIO_BUCKET: lakehouse
+  #     LOG_LEVEL: INFO
+  #   volumes:
+  #     - ./workspace:/app
+  #   command: >
+  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
+  #            python /app/ingestion/geo_context/osm/runners/run_roads.py"
+  #   networks:
+  #     - lakehouse-net
+
+  # collector-osm-transit-stops:
+  #   image: python:3.11-slim
+  #   container_name: hcmre-collector-osm-transit-stops
+  #   depends_on:
+  #     - minio
+  #   working_dir: /app
+  #   environment:
+  #     PYTHONPATH: /app
+  #     MINIO_ENDPOINT: minio:9000
+  #     MINIO_ACCESS_KEY: minioadmin
+  #     MINIO_SECRET_KEY: minioadmin
+  #     MINIO_SECURE: "false"
+  #     MINIO_BUCKET: lakehouse
+  #     LOG_LEVEL: INFO
+  #   volumes:
+  #     - ./workspace:/app
+  #   command: >
+  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
+  #            python /app/ingestion/geo_context/osm/runners/run_transit_stops.py"
+  #   networks:
+  #     - lakehouse-net
+
+  # collector-osm-railways:
+  #   image: python:3.11-slim
+  #   container_name: hcmre-collector-osm-railways
+  #   depends_on:
+  #     - minio
+  #   working_dir: /app
+  #   environment:
+  #     PYTHONPATH: /app
+  #     MINIO_ENDPOINT: minio:9000
+  #     MINIO_ACCESS_KEY: minioadmin
+  #     MINIO_SECRET_KEY: minioadmin
+  #     MINIO_SECURE: "false"
+  #     MINIO_BUCKET: lakehouse
+  #     LOG_LEVEL: INFO
+  #   volumes:
+  #     - ./workspace:/app
+  #   command: >
+  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
+  #            python /app/ingestion/geo_context/osm/runners/run_railways.py"
+  #   networks:
+  #     - lakehouse-net
+
+  # collector-osm:
+  #   image: python:3.11-slim
+  #   container_name: hcmre-collector-osm
+  #   depends_on:
+  #     - minio
+  #   working_dir: /app
+  #   environment:
+  #     PYTHONPATH: /app
+  #     MINIO_ENDPOINT: minio:9000
+  #     MINIO_ACCESS_KEY: minioadmin
+  #     MINIO_SECRET_KEY: minioadmin
+  #     MINIO_SECURE: "false"
+  #     MINIO_BUCKET: lakehouse
+  #     LOG_LEVEL: INFO
+  #     OSM_DATASET: pois
+  #   volumes:
+  #     - ./workspace:/app
+  #   command: >
+  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
+  #            python /app/ingestion/geo_context/osm/runners/run_osm.py $$OSM_DATASET"
+  #   networks:
+  #     - lakehouse-net
+
+  # collector-osm-all:
+  #   image: python:3.11-slim
+  #   container_name: hcmre-collector-osm-all
+  #   depends_on:
+  #     - minio
+  #   working_dir: /app
+  #   environment:
+  #     PYTHONPATH: /app
+  #     MINIO_ENDPOINT: minio:9000
+  #     MINIO_ACCESS_KEY: minioadmin
+  #     MINIO_SECRET_KEY: minioadmin
+  #     MINIO_SECURE: "false"
+  #     MINIO_BUCKET: lakehouse
+  #     LOG_LEVEL: INFO
+  #   volumes:
+  #     - ./workspace:/app
+  #   command: >
+  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
+  #            python /app/ingestion/geo_context/osm/runners/run_all.py"
+  #   networks:
+  #     - lakehouse-net
+
+  collector-osm:
+    image: python:3.11-slim
+    container_name: hcmre-collector-osm
+    depends_on:
+      - minio
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECURE: "false"
+      MINIO_BUCKET: lakehouse
+      LOG_LEVEL: INFO
+      OSM_ENTITY: all
+    volumes:
+      - ./workspace:/app
+    command: >
+      sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
+            python /app/ingestion/geo_context/osm/runners/run_osm.py"
+    networks:
+      - lakehouse-net
+
+  validate-bronze:
+    image: python:3.11-slim
+    container_name: hcmre-validate-bronze
+    depends_on:
+      - minio
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECURE: "false"
+      MINIO_BUCKET: lakehouse
+    volumes:
+      - ./workspace:/app
+    command: >
+      sh -c "pip install --no-cache-dir minio &&
+             python /app/processing/bronze_validation/validate_bronze.py"
+    networks:
+      - lakehouse-net
+
+volumes:
+  minio-data:
+  postgres-db-volume:
+
+networks:
+  lakehouse-net:
+    driver: bridge

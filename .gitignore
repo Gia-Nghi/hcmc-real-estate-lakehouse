@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+logs/
+airflow/logs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# Models / artifacts
+models/
+*.pkl
+*.joblib
+
+# Env config
+.env
+
+# MinIO / data (nếu có local data)
+data/
+tmp/
