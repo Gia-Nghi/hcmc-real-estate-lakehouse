@@ -191,6 +191,7 @@ services:
       MINIO_SECURE: "false"
       MINIO_BUCKET: lakehouse
       FLUSH_EVERY: 20
+      CONSUMER_MAX_RECORDS: 20
       LOG_LEVEL: INFO
     volumes:
       - ./workspace:/app
@@ -223,139 +224,6 @@ services:
              python /app/ingestion/user_interest/google_trends/run.py"
     networks:
       - lakehouse-net
-
-  # collector-osm-pois:
-  #   image: python:3.11-slim
-  #   container_name: hcmre-collector-osm-pois
-  #   depends_on:
-  #     - minio
-  #   working_dir: /app
-  #   environment:
-  #     PYTHONPATH: /app
-  #     MINIO_ENDPOINT: minio:9000
-  #     MINIO_ACCESS_KEY: minioadmin
-  #     MINIO_SECRET_KEY: minioadmin
-  #     MINIO_SECURE: "false"
-  #     MINIO_BUCKET: lakehouse
-  #     LOG_LEVEL: INFO
-  #   volumes:
-  #     - ./workspace:/app
-  #   command: >
-  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
-  #            python /app/ingestion/geo_context/osm/runners/run_pois.py"
-  #   networks:
-  #     - lakehouse-net
-
-  # collector-osm-roads:
-  #   image: python:3.11-slim
-  #   container_name: hcmre-collector-osm-roads
-  #   depends_on:
-  #     - minio
-  #   working_dir: /app
-  #   environment:
-  #     PYTHONPATH: /app
-  #     MINIO_ENDPOINT: minio:9000
-  #     MINIO_ACCESS_KEY: minioadmin
-  #     MINIO_SECRET_KEY: minioadmin
-  #     MINIO_SECURE: "false"
-  #     MINIO_BUCKET: lakehouse
-  #     LOG_LEVEL: INFO
-  #   volumes:
-  #     - ./workspace:/app
-  #   command: >
-  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
-  #            python /app/ingestion/geo_context/osm/runners/run_roads.py"
-  #   networks:
-  #     - lakehouse-net
-
-  # collector-osm-transit-stops:
-  #   image: python:3.11-slim
-  #   container_name: hcmre-collector-osm-transit-stops
-  #   depends_on:
-  #     - minio
-  #   working_dir: /app
-  #   environment:
-  #     PYTHONPATH: /app
-  #     MINIO_ENDPOINT: minio:9000
-  #     MINIO_ACCESS_KEY: minioadmin
-  #     MINIO_SECRET_KEY: minioadmin
-  #     MINIO_SECURE: "false"
-  #     MINIO_BUCKET: lakehouse
-  #     LOG_LEVEL: INFO
-  #   volumes:
-  #     - ./workspace:/app
-  #   command: >
-  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
-  #            python /app/ingestion/geo_context/osm/runners/run_transit_stops.py"
-  #   networks:
-  #     - lakehouse-net
-
-  # collector-osm-railways:
-  #   image: python:3.11-slim
-  #   container_name: hcmre-collector-osm-railways
-  #   depends_on:
-  #     - minio
-  #   working_dir: /app
-  #   environment:
-  #     PYTHONPATH: /app
-  #     MINIO_ENDPOINT: minio:9000
-  #     MINIO_ACCESS_KEY: minioadmin
-  #     MINIO_SECRET_KEY: minioadmin
-  #     MINIO_SECURE: "false"
-  #     MINIO_BUCKET: lakehouse
-  #     LOG_LEVEL: INFO
-  #   volumes:
-  #     - ./workspace:/app
-  #   command: >
-  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
-  #            python /app/ingestion/geo_context/osm/runners/run_railways.py"
-  #   networks:
-  #     - lakehouse-net
-
-  # collector-osm:
-  #   image: python:3.11-slim
-  #   container_name: hcmre-collector-osm
-  #   depends_on:
-  #     - minio
-  #   working_dir: /app
-  #   environment:
-  #     PYTHONPATH: /app
-  #     MINIO_ENDPOINT: minio:9000
-  #     MINIO_ACCESS_KEY: minioadmin
-  #     MINIO_SECRET_KEY: minioadmin
-  #     MINIO_SECURE: "false"
-  #     MINIO_BUCKET: lakehouse
-  #     LOG_LEVEL: INFO
-  #     OSM_DATASET: pois
-  #   volumes:
-  #     - ./workspace:/app
-  #   command: >
-  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
-  #            python /app/ingestion/geo_context/osm/runners/run_osm.py $$OSM_DATASET"
-  #   networks:
-  #     - lakehouse-net
-
-  # collector-osm-all:
-  #   image: python:3.11-slim
-  #   container_name: hcmre-collector-osm-all
-  #   depends_on:
-  #     - minio
-  #   working_dir: /app
-  #   environment:
-  #     PYTHONPATH: /app
-  #     MINIO_ENDPOINT: minio:9000
-  #     MINIO_ACCESS_KEY: minioadmin
-  #     MINIO_SECRET_KEY: minioadmin
-  #     MINIO_SECURE: "false"
-  #     MINIO_BUCKET: lakehouse
-  #     LOG_LEVEL: INFO
-  #   volumes:
-  #     - ./workspace:/app
-  #   command: >
-  #     sh -c "pip install --no-cache-dir -r /app/requirements/ingestion.txt &&
-  #            python /app/ingestion/geo_context/osm/runners/run_all.py"
-  #   networks:
-  #     - lakehouse-net
 
   collector-osm:
     image: python:3.11-slim
@@ -395,9 +263,12 @@ services:
       MINIO_BUCKET: lakehouse
     volumes:
       - ./workspace:/app
+    # command: >
+    #   sh -c "pip install --no-cache-dir minio &&
+    #          python /app/processing/bronze_validation/validate_bronze.py"
     command: >
       sh -c "pip install --no-cache-dir minio &&
-             python /app/processing/bronze_validation/validate_bronze.py"
+             python /app/processing/validation/validate_bronze.py"
     networks:
       - lakehouse-net
 

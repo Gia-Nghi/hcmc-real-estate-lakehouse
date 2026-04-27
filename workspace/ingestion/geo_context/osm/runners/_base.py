@@ -1,10 +1,15 @@
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List
 
 from common.io.minio_client import create_minio_client, ensure_bucket, upload_json_bytes
 from common.utils.logger import get_logger
 from ingestion.geo_context.osm.client import fetch_overpass
-from ingestion.geo_context.osm.config import GRID_BBOXES, MINIO_BUCKET
+from ingestion.geo_context.osm.config import (
+    GRID_BBOXES,
+    MINIO_BUCKET,
+    OVERPASS_SLEEP_BETWEEN_BBOX_SECONDS,
+)
 
 logger = get_logger(__name__)
 
@@ -19,9 +24,28 @@ def collect_by_grid(
         south, west, north, east = bbox
         logger.info("Fetching %s bbox=%s", entity_name, bbox)
 
-        query = query_builder(south, west, north, east)
-        data = fetch_overpass(query)
-        all_elements.extend(data.get("elements", []))
+        try:
+            query = query_builder(south, west, north, east)
+            data = fetch_overpass(query)
+            elements = data.get("elements", [])
+            all_elements.extend(elements)
+
+            logger.info(
+                "Fetched %s elements for %s bbox=%s",
+                len(elements),
+                entity_name,
+                bbox,
+            )
+
+        except Exception as exc:
+            logger.warning(
+                "Skip bbox=%s for entity=%s because Overpass failed: %s",
+                bbox,
+                entity_name,
+                exc,
+            )
+
+        time.sleep(OVERPASS_SLEEP_BETWEEN_BBOX_SECONDS)
 
     return all_elements
 

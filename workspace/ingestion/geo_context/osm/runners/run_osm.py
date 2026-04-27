@@ -1,5 +1,7 @@
 import os
+import time
 
+from ingestion.geo_context.osm.config import OVERPASS_SLEEP_BETWEEN_ENTITY_SECONDS
 from ingestion.geo_context.osm.registry import OSM_ENTITY_REGISTRY
 from ingestion.geo_context.osm.runners._base import collect_by_grid, upload_dataset
 
@@ -24,6 +26,7 @@ def main() -> None:
     if entity == "all":
         for entity_name in OSM_ENTITY_REGISTRY:
             run_entity(entity_name)
+            time.sleep(OVERPASS_SLEEP_BETWEEN_ENTITY_SECONDS)
     else:
         if entity not in OSM_ENTITY_REGISTRY:
             raise ValueError(

@@ -32,17 +32,35 @@ def fetch_overpass(query: str) -> Dict[str, Any]:
                 headers=headers,
                 timeout=OVERPASS_TIMEOUT_SECONDS,
             )
+
+            if resp.status_code == 429:
+                sleep_seconds = OVERPASS_RETRY_BACKOFF_SECONDS * (attempt + 1)
+                logger.warning(
+                    "Overpass rate limited attempt=%s/%s. Sleeping %ss",
+                    attempt + 1,
+                    OVERPASS_RETRIES,
+                    sleep_seconds,
+                )
+                time.sleep(sleep_seconds)
+                continue
+
             resp.raise_for_status()
             return resp.json()
+
         except requests.RequestException as exc:
             last_error = exc
             logger.warning(
-                "Overpass request failed at attempt=%s/%s: %s",
+                "Overpass request failed attempt=%s/%s: %s",
                 attempt + 1,
                 OVERPASS_RETRIES,
                 exc,
             )
-            if attempt < OVERPASS_RETRIES - 1:
-                time.sleep(OVERPASS_RETRY_BACKOFF_SECONDS * (attempt + 1))
 
-    raise last_error
+            if attempt < OVERPASS_RETRIES - 1:
+                sleep_seconds = OVERPASS_RETRY_BACKOFF_SECONDS * (attempt + 1)
+                time.sleep(sleep_seconds)
+
+    if last_error:
+        raise last_error
+
+    raise RuntimeError("Overpass request failed after retries")

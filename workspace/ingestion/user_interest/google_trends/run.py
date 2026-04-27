@@ -1,66 +1,3 @@
-# from datetime import datetime, timezone
-
-# from pytrends.request import TrendReq
-
-# from common.io.minio_client import create_minio_client, ensure_bucket, upload_json_bytes
-# from common.utils.logger import get_logger
-# from ingestion.user_interest.google_trends.config import GEO, KEYWORDS, MINIO_BUCKET, TIMEFRAME
-
-# logger = get_logger(__name__)
-
-
-# def main() -> None:
-#     pytrends = TrendReq(hl="vi-VN", tz=420)
-
-#     pytrends.build_payload(
-#         kw_list=KEYWORDS,
-#         timeframe=TIMEFRAME,
-#         geo=GEO,
-#     )
-
-#     df = pytrends.interest_over_time().reset_index()
-
-#     # Chuyển mọi giá trị Timestamp/datetime sang string ISO để JSON serialize được
-#     records = []
-#     for row in df.to_dict(orient="records"):
-#         normalized_row = {}
-#         for k, v in row.items():
-#             if hasattr(v, "isoformat"):
-#                 normalized_row[k] = v.isoformat()
-#             else:
-#                 normalized_row[k] = v
-#         records.append(normalized_row)
-
-#     payload = {
-#         "source": "google_trends",
-#         "domain": "user_interest",
-#         "entity_type": "search_interest_timeseries",
-#         "target_region": "Ho Chi Minh City",
-#         "geo": GEO,
-#         "timeframe": TIMEFRAME,
-#         "keywords": KEYWORDS,
-#         "collected_at_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
-#         "payload": records,
-#     }
-
-#     client = create_minio_client()
-#     ensure_bucket(client, MINIO_BUCKET)
-
-#     now = datetime.now(timezone.utc)
-#     dt = now.strftime("%Y-%m-%d")
-#     ts = now.strftime("%Y%m%dT%H%M%SZ")
-#     object_name = (
-#         f"bronze/user_interest/google_trends/"
-#         f"dt={dt}/snapshot_{ts}.json"
-#     )
-
-#     upload_json_bytes(client, MINIO_BUCKET, object_name, payload)
-#     logger.info("Uploaded Google Trends snapshot to s3://%s/%s", MINIO_BUCKET, object_name)
-
-
-# if __name__ == "__main__":
-#     main()
-
 from datetime import datetime, timezone, timedelta
 
 import pandas as pd
@@ -106,12 +43,14 @@ def collect_snapshot(pytrends: TrendReq) -> dict:
     payload = {
         "source": "google_trends",
         "domain": "user_interest",
-        "entity_type": "search_interest_timeseries_snapshot",
+        "entity_type": "trends",
+        # "entity_type": "search_interest_timeseries_snapshot",
         "target_region": "Ho Chi Minh City",
         "geo": GEO,
         "timeframe": TIMEFRAME,
         "keywords": KEYWORDS,
         "collected_at_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "record_count": len(records),
         "payload": records,
     }
     return payload
@@ -156,13 +95,15 @@ def collect_daily_12m(pytrends: TrendReq) -> dict:
         payload = {
             "source": "google_trends",
             "domain": "user_interest",
-            "entity_type": "search_interest_timeseries_daily_12m",
+            # "entity_type": "search_interest_timeseries_daily_12m",
+            "entity_type": "trends",
             "target_region": "Ho Chi Minh City",
             "geo": GEO,
             "months_back": DAILY_MONTHS_BACK,
             "window_days": DAILY_WINDOW_DAYS,
             "keywords": KEYWORDS,
             "collected_at_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
+            "record_count": 0,
             "payload": [],
         }
         return payload
@@ -180,17 +121,44 @@ def collect_daily_12m(pytrends: TrendReq) -> dict:
     payload = {
         "source": "google_trends",
         "domain": "user_interest",
-        "entity_type": "search_interest_timeseries_daily_12m",
+        "entity_type": "trends",
         "target_region": "Ho Chi Minh City",
         "geo": GEO,
         "months_back": DAILY_MONTHS_BACK,
         "window_days": DAILY_WINDOW_DAYS,
         "keywords": KEYWORDS,
         "collected_at_ms": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "record_count": len(records),
         "payload": records,
     }
     return payload
 
+def build_fallback_payload(entity_type: str, reason: str) -> dict:
+    now = datetime.now(timezone.utc)
+
+    records = [
+        {
+            "date": now.strftime("%Y-%m-%d"),
+            "keyword": keyword,
+            "interest": 0,
+            "is_fallback": True,
+            "fallback_reason": reason,
+        }
+        for keyword in KEYWORDS
+    ]
+
+    return {
+        "source": "google_trends",
+        "domain": "user_interest",
+        "entity_type": "trends",
+        "target_region": "Ho Chi Minh City",
+        "geo": GEO,
+        "timeframe": TIMEFRAME,
+        "keywords": KEYWORDS,
+        "collected_at_ms": int(now.timestamp() * 1000),
+        "record_count": len(records),
+        "payload": records,
+    }
 
 def main() -> None:
     pytrends = TrendReq(hl="vi-VN", tz=420)
@@ -203,19 +171,28 @@ def main() -> None:
     ts = now.strftime("%Y%m%dT%H%M%SZ")
 
     # 1) Snapshot tổng quát
-    snapshot_payload = collect_snapshot(pytrends)
+    # snapshot_payload = collect_snapshot(pytrends)
+    try:
+        snapshot_payload = collect_snapshot(pytrends)
+    except Exception as exc:
+        logger.warning("Google Trends snapshot failed, using fallback payload: %s", exc)
+        snapshot_payload = build_fallback_payload("trends", str(exc))
     snapshot_object = (
-        f"bronze/user_interest/google_trends/"
-        f"dt={dt}/snapshot_{ts}.json"
+    f"bronze/user_interest/google_trends/trends/"
+    f"dt={dt}/google_trends_snapshot_{ts}.json"
     )
     upload_json_bytes(client, MINIO_BUCKET, snapshot_object, snapshot_payload)
     logger.info("Uploaded snapshot to s3://%s/%s", MINIO_BUCKET, snapshot_object)
 
     # 2) Daily 12 months gần nhất
-    daily_payload = collect_daily_12m(pytrends)
+    try:
+        daily_payload = collect_daily_12m(pytrends)
+    except Exception as exc:
+        logger.warning("Google Trends daily 12m failed, using fallback payload: %s", exc)
+        daily_payload = build_fallback_payload("trends", str(exc))
     daily_object = (
-        f"bronze/user_interest/google_trends/"
-        f"dt={dt}/daily_12m_{ts}.json"
+    f"bronze/user_interest/google_trends/trends/"
+    f"dt={dt}/google_trends_daily_12m_{ts}.json"  
     )
     upload_json_bytes(client, MINIO_BUCKET, daily_object, daily_payload)
     logger.info("Uploaded daily 12m to s3://%s/%s", MINIO_BUCKET, daily_object)
